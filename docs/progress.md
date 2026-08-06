@@ -30,7 +30,7 @@
 - `docs/progress.md` (milestone progress tracking)
 - `FINAL_RUNTIME_REPORT.md` (comprehensive final runtime validation report)
 - `PRODUCTION_CHECKLIST.md` (final 20-point production audit report)
-- `vercel.json` & `frontend/vercel.json` (Vercel frontend configurations)
+- `vercel.json` & `frontend/vercel.json` (Multi-service Vercel monorepo configuration)
 - `render.yaml` (Render backend web service blueprint)
 - `railway.json` (Railway backend service configuration)
 - `.env.example` (Updated free tier env template)
