@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: mirrorconnect-backend
+    env: node
+    plan: free
+    region: oregon
+    buildCommand: "npm run build --workspace @mirrorconnect/shared && npm run build --workspace @mirrorconnect/backend"
+    startCommand: "cd backend && npx prisma migrate deploy && node dist/server.js"
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PUBLIC_APP_URL
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: SESSION_TTL_SECONDS
+        value: "300"
+      - key: INACTIVITY_TIMEOUT_SECONDS
+        value: "120"
+      - key: STUN_URL
+        value: "stun:stun.l.google.com:19302"

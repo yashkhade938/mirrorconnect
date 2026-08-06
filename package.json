@@ -1,26 +1,22 @@
 {
-  "name": "mixtape-app",
-  "version": "0.1.0",
+  "name": "mirrorconnect",
+  "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "frontend",
+    "backend",
+    "shared"
+  ],
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
-  },
-  "dependencies": {
-    "next": "16.2.10",
-    "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "dev": "npm run dev --workspace @mirrorconnect/backend",
+    "dev:frontend": "npm run dev --workspace @mirrorconnect/frontend",
+    "dev:backend": "npm run dev --workspace @mirrorconnect/backend",
+    "build": "npm run build --workspace @mirrorconnect/shared && npm run build --workspace @mirrorconnect/backend && npm run build --workspace @mirrorconnect/frontend",
+    "lint": "npm run lint --workspace @mirrorconnect/frontend",
+    "migrate:deploy": "npm run migrate:deploy --workspace @mirrorconnect/backend"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.2.10",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+    "@tailwindcss/postcss": "4.1.17",
+    "tailwindcss": "4.1.17"
   }
 }

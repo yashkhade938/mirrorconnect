@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SessionStatus {
+  waiting
+  connecting
+  connected
+  disconnected
+  expired
+}
+
+model MirrorSession {
+  id             String        @id @default(cuid())
+  sessionId      String        @unique
+  status         SessionStatus @default(waiting)
+  tokenHash      String
+  deviceName     String?
+  viewerSocketId String?
+  deviceSocketId String?
+  connectedAt    DateTime?
+  lastActivityAt DateTime      @default(now())
+  expiresAt      DateTime
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  events         SessionEvent[]
+
+  @@index([status])
+  @@index([expiresAt])
+  @@index([lastActivityAt])
+}
+
+model SessionEvent {
+  id        String        @id @default(cuid())
+  sessionId String
+  type      String
+  detail    Json?
+  createdAt DateTime      @default(now())
+  session   MirrorSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}

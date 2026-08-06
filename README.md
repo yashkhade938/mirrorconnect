@@ -1,36 +1,96 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MirrorConnect
 
-## Getting Started
+MirrorConnect is a production-ready QR-paired Android browser screen mirroring app. A PC opens the dashboard, receives a five-minute one-session QR code, and an Android browser scans it to share the screen over WebRTC with Socket.IO signaling.
 
-First, run the development server:
+## Stack
+
+- Frontend: Next.js 16.3.0 App Router, TypeScript, Tailwind CSS
+- Backend: Node.js, Express, Socket.IO
+- Streaming: WebRTC with STUN and optional TURN
+- QR: `qrcode`
+- Database: PostgreSQL with Prisma
+- Security: JWT session tokens, rate limiting, Helmet, CORS, input validation
+- Free Deployment: Vercel + Render/Railway + Neon Serverless PostgreSQL
+
+## Features
+
+- One QR code per session with automatic five-minute refresh
+- Session-scoped JWT pairing and one-device enforcement
+- WebRTC offer, answer, and ICE candidate exchange
+- Reconnect-capable Socket.IO signaling
+- Status states: Waiting, Connecting, Connected, Disconnected, Expired
+- Bitrate, FPS, resolution, and latency display
+- Fullscreen, screenshot, and stream recording
+- Dark mode and responsive phone/desktop views
+- Inactivity expiry for abandoned sessions
+- STUN/TURN environment configuration
+
+## Free Cloud Deployment (No VPS Required)
+
+MirrorConnect can be deployed 100% free using serverless cloud platforms:
+
+- **Frontend**: Deploy to **Vercel Free** (`vercel.json`)
+- **Backend**: Deploy to **Render Free** (`render.yaml`) or **Railway Free** (`railway.json`)
+- **Database**: Deploy to **Neon Free** or **Supabase Free** Serverless PostgreSQL
+
+Detailed step-by-step instructions:
+- Architecture Overview: [`DEPLOY_FREE.md`](file:///c:/Users/Yash%20Khade/Documents/New%20Project_1/DEPLOY_FREE.md)
+- Step-by-Step Walkthrough Guide: [`FREE_DEPLOYMENT_GUIDE.md`](file:///c:/Users/Yash%20Khade/Documents/New%20Project_1/FREE_DEPLOYMENT_GUIDE.md)
+
+## Local Development
+
+Install dependencies:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Start PostgreSQL, then configure the backend:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+cp backend/.env.example backend/.env
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Run migrations:
 
-## Learn More
+```bash
+npm run migrate:deploy --workspace @mirrorconnect/backend
+```
 
-To learn more about Next.js, take a look at the following resources:
+Run backend and frontend in separate terminals:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run dev:backend
+npm run dev:frontend
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Open `http://localhost:3000`.
 
-## Deploy on Vercel
+## Production Deployment Notes
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Use HTTPS in production. Android browser screen capture requires a secure context, except for localhost.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Multiple frontend origins are supported via `FRONTEND_ORIGIN`, `FRONTEND_ORIGIN_2`, `FRONTEND_ORIGIN_3` environment variables.
+
+Rotate `JWT_SECRET` with a long random value and keep database credentials outside source control.
+
+## API & Endpoints
+
+- `GET /health` service health and database telemetry
+- `GET /ready` service readiness probe
+- `GET /version` backend version probe
+- `POST /api/session` creates a unique session and QR payload
+- `GET /api/session/:id` returns public session state
+- `POST /api/connect` authorizes a scanned phone with the QR JWT
+- `POST /api/disconnect` ends a paired session
+
+## Socket Events
+
+- `create-session`
+- `join-session`
+- `offer`
+- `answer`
+- `ice-candidate`
+- `disconnect-session`
+- `expired`
+

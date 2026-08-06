@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model SearchCache {
+  id         String   @id @default(cuid())
+  query      String
+  maxResults Int      @default(12)
+  results    String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([query, maxResults])
+  @@index([updatedAt])
+}
+
+model SearchQuery {
+  id              String         @id @default(cuid())
+  query           String
+  normalizedQuery String         @unique
+  searchCount     Int            @default(0)
+  cachedAt        DateTime       @default(now())
+  refreshedAt     DateTime       @default(now())
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  results         SearchResult[]
+
+  @@index([normalizedQuery])
+  @@index([searchCount])
+  @@index([cachedAt])
+}
+
+model SearchResult {
+  id            String      @id @default(cuid())
+  searchQueryId String
+  videoId       String
+  title         String
+  rawTitle      String
+  artist        String
+  channelName   String
+  thumbnail     String
+  duration      String?
+  publishedAt   DateTime?
+  description   String?
+  position      Int
+  cachedAt      DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  searchQuery   SearchQuery @relation(fields: [searchQueryId], references: [id], onDelete: Cascade)
+
+  @@unique([searchQueryId, videoId])
+  @@index([videoId])
+  @@index([searchQueryId, position])
+  @@index([title])
+  @@index([channelName])
+  @@index([cachedAt])
+}
+
+model YouTubeApiUsage {
+  day         String   @id
+  searchCalls Int      @default(0)
+  videoCalls  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ImportedPlaylist {
+  id         String          @id @default(cuid())
+  name       String
+  source     String
+  sourceUrl  String          @unique
+  externalId String?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  tracks     ImportedTrack[]
+
+  @@index([source])
+  @@index([updatedAt])
+}
+
+model ImportedTrack {
+  id                    String           @id @default(cuid())
+  importedPlaylistId    String
+  title                 String
+  artist                String
+  artworkUrl            String?
+  position              Int
+  normalizedKey         String
+  matchedYoutubeVideoId String?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  importedPlaylist      ImportedPlaylist @relation(fields: [importedPlaylistId], references: [id], onDelete: Cascade)
+
+  @@unique([importedPlaylistId, position])
+  @@index([importedPlaylistId, normalizedKey])
+  @@index([title])
+  @@index([artist])
+  @@index([matchedYoutubeVideoId])
+}
+
+model User {
+  id          String        @id @default(cuid())
+  email       String        @unique
+  name        String?
+  image       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  playlists   Playlist[]
+  likes       Like[]
+  playHistory PlayHistory[]
+}
+
+model Playlist {
+  id          String          @id @default(cuid())
+  userId      String
+  name        String
+  description String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tracks      PlaylistTrack[]
+
+  @@index([userId])
+}
+
+model PlaylistTrack {
+  id             String   @id @default(cuid())
+  playlistId     String
+  youtubeVideoId String
+  title          String
+  artist         String
+  channelTitle   String
+  thumbnail      String
+  rawTitle       String
+  position       Int
+  addedAt        DateTime @default(now())
+  playlist       Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, youtubeVideoId])
+  @@index([playlistId, position])
+}
+
+model Like {
+  id             String   @id @default(cuid())
+  userId         String
+  youtubeVideoId String
+  title          String
+  artist         String
+  channelTitle   String
+  thumbnail      String
+  rawTitle       String
+  createdAt      DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, youtubeVideoId])
+  @@index([userId, createdAt])
+}
+
+model PlayHistory {
+  id             String   @id @default(cuid())
+  userId         String
+  youtubeVideoId String
+  title          String
+  artist         String
+  channelTitle   String
+  thumbnail      String
+  rawTitle       String
+  playedAt       DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, playedAt])
+  @@index([userId, artist])
+}

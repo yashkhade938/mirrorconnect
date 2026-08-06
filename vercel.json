@@ -1,0 +1,7 @@
+{
+  "version": 2,
+  "buildCommand": "npm run build --workspace @mirrorconnect/shared && npm run build --workspace @mirrorconnect/frontend",
+  "outputDirectory": "frontend/.next",
+  "framework": "nextjs",
+  "regions": ["iad1"]
+}
