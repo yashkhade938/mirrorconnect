@@ -1,27 +1,6 @@
 {
-  "services": {
-    "frontend": {
-      "root": "frontend",
-      "framework": "nextjs"
-    },
-    "backend": {
-      "root": "backend"
-    }
-  },
-  "rewrites": [
-    {
-      "source": "/api/backend(/.*)?",
-      "destination": {
-        "type": "service",
-        "service": "backend"
-      }
-    },
-    {
-      "source": "/(.*)",
-      "destination": {
-        "type": "service",
-        "service": "frontend"
-      }
-    }
-  ]
+  "version": 2,
+  "buildCommand": "npm run build --workspace @mirrorconnect/shared && npm run build --workspace @mirrorconnect/frontend",
+  "outputDirectory": "frontend/.next",
+  "framework": "nextjs"
 }
