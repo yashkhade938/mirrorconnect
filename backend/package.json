@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate --schema prisma/schema.prisma && tsc -p tsconfig.json",
+    "build": "npx prisma generate --schema prisma/schema.prisma && tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
-    "prisma:generate": "prisma generate --schema prisma/schema.prisma"
+    "migrate:deploy": "npx prisma migrate deploy --schema prisma/schema.prisma",
+    "prisma:generate": "npx prisma generate --schema prisma/schema.prisma"
   },
   "dependencies": {
     "@mirrorconnect/shared": "file:../shared",
@@ -21,6 +21,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.1",
+    "prisma": "^6.19.3",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.1",
     "zod": "^4.0.14"
@@ -32,7 +33,6 @@
     "@types/morgan": "^1.9.10",
     "@types/node": "^20.19.9",
     "@types/qrcode": "^1.5.5",
-    "prisma": "^6.19.3",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }
