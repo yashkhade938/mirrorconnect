@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate --schema prisma/schema.prisma && tsc -p tsconfig.json",
+    "build": "npx --no-install prisma generate --schema prisma/schema.prisma && tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
-    "prisma:generate": "prisma generate --schema prisma/schema.prisma"
+    "migrate:deploy": "npx --no-install prisma migrate deploy --schema prisma/schema.prisma",
+    "prisma:generate": "npx --no-install prisma generate --schema prisma/schema.prisma"
   },
   "dependencies": {
     "@mirrorconnect/shared": "file:../shared",
