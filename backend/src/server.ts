@@ -28,7 +28,7 @@ const envSchema = z.object({
   SESSION_TTL_SECONDS: z.string().default("300").transform(Number),
   INACTIVITY_TIMEOUT_SECONDS: z.string().default("120").transform(Number),
   JWT_SECRET: z.string().min(16).default("mirrorconnect-default-production-jwt-secret-key-32chars"),
-  PUBLIC_APP_URL: z.string().url().default("http://localhost:3000"),
+  PUBLIC_APP_URL: z.string().default("http://localhost:3000"),
   FRONTEND_ORIGIN: z.string().default("http://localhost:3000"),
   DATABASE_URL: z.string().optional(),
   STUN_URL: z.string().default("stun:stun.l.google.com:19302"),
@@ -693,27 +693,22 @@ app.use((error: unknown, req: express.Request, res: express.Response, _next: exp
   });
 });
 
-// 7. Database Connection Retry Logic on Startup
-async function startServerWithRetry(maxRetries = 5, delayMs = 2000) {
+// 7. Database Connection Retry Logic (Non-blocking background connection)
+async function connectDatabaseWithRetry(maxRetries = 5, delayMs = 2000) {
   for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
     try {
       await prisma.$connect();
       await prisma.$queryRaw`SELECT 1`;
       logger.info("Database connection established successfully.");
-      break;
+      return;
     } catch (err) {
       logger.error(`Database connection attempt ${attempt}/${maxRetries} failed:`, { error: err instanceof Error ? err.message : String(err) });
-      if (attempt === maxRetries) {
-        logger.error("Failed to connect to database after max retries. Exiting.");
-        process.exit(1);
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
-
-  server.listen(PORT, () => {
-    logger.info(`MirrorConnect production signaling server listening on port ${PORT}`, { port: PORT, env: env.NODE_ENV });
-  });
+  logger.warn("Could not establish initial database connection after max retries. Retrying on demand.");
 }
 
 // 3. Graceful Shutdown Handlers (SIGTERM / SIGINT)
@@ -746,5 +741,8 @@ async function shutdown(signal: string) {
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
-// Start server
-void startServerWithRetry();
+// Start server immediately on 0.0.0.0 to satisfy Render health check port binding
+server.listen(PORT, "0.0.0.0", () => {
+  logger.info(`MirrorConnect production signaling server listening on 0.0.0.0:${PORT}`, { port: PORT, env: env.NODE_ENV });
+  void connectDatabaseWithRetry();
+});
