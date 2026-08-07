@@ -2,6 +2,7 @@ import "dotenv/config";
 import crypto from "node:crypto";
 import http from "node:http";
 import bcrypt from "bcryptjs";
+import compression from "compression";
 import cors from "cors";
 import express from "express";
 import rateLimit from "express-rate-limit";
@@ -20,32 +21,79 @@ import {
   sanitizeDeviceName,
 } from "@mirrorconnect/shared";
 
-const prisma = new PrismaClient();
+// 10. Environment Variable Schema & Validation
+const envSchema = z.object({
+  PORT: z.string().default("4000").transform(Number),
+  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  SESSION_TTL_SECONDS: z.string().default("300").transform(Number),
+  INACTIVITY_TIMEOUT_SECONDS: z.string().default("120").transform(Number),
+  JWT_SECRET: z.string().min(16).default("mirrorconnect-default-production-jwt-secret-key-32chars"),
+  PUBLIC_APP_URL: z.string().url().default("http://localhost:3000"),
+  FRONTEND_ORIGIN: z.string().default("http://localhost:3000"),
+  DATABASE_URL: z.string().optional(),
+  STUN_URL: z.string().default("stun:stun.l.google.com:19302"),
+  TURN_URL: z.string().optional(),
+  TURN_USERNAME: z.string().optional(),
+  TURN_CREDENTIAL: z.string().optional(),
+});
+
+const envParseResult = envSchema.safeParse(process.env);
+if (!envParseResult.success) {
+  console.error("❌ Environment configuration validation failed:", envParseResult.error.format());
+  process.exit(1);
+}
+
+const env = envParseResult.data;
+const IS_DEV = env.NODE_ENV !== "production";
+const PORT = env.PORT;
+const SESSION_TTL_MS = env.SESSION_TTL_SECONDS * 1000;
+const INACTIVITY_MS = env.INACTIVITY_TIMEOUT_SECONDS * 1000;
+const JWT_SECRET = env.JWT_SECRET;
+const PUBLIC_APP_URL = env.PUBLIC_APP_URL;
+
+// 8. Structured Logging Utility
+const logger = {
+  info: (msg: string, meta?: Record<string, unknown>) => {
+    if (IS_DEV) {
+      console.log(`[INFO] ${msg}`, meta ? JSON.stringify(meta) : "");
+    } else {
+      console.log(JSON.stringify({ level: "info", time: new Date().toISOString(), message: msg, ...meta }));
+    }
+  },
+  warn: (msg: string, meta?: Record<string, unknown>) => {
+    if (IS_DEV) {
+      console.warn(`[WARN] ${msg}`, meta ? JSON.stringify(meta) : "");
+    } else {
+      console.warn(JSON.stringify({ level: "warn", time: new Date().toISOString(), message: msg, ...meta }));
+    }
+  },
+  error: (msg: string, meta?: Record<string, unknown>) => {
+    if (IS_DEV) {
+      console.error(`[ERROR] ${msg}`, meta ? JSON.stringify(meta) : "");
+    } else {
+      console.error(JSON.stringify({ level: "error", time: new Date().toISOString(), message: msg, ...meta }));
+    }
+  },
+};
+
+// 9. Prisma Client Setup with Conditional Dev Query Logging & Connection Pooling
+const prisma = new PrismaClient({
+  log: IS_DEV ? ["query", "info", "warn", "error"] : ["error"],
+});
+
 const app = express();
 const server = http.createServer(app);
 
-const PORT = Number(process.env.PORT ?? 4000);
-const SESSION_TTL_MS = Number(process.env.SESSION_TTL_SECONDS ?? 300) * 1000;
-const INACTIVITY_MS = Number(process.env.INACTIVITY_TIMEOUT_SECONDS ?? 120) * 1000;
-const JWT_SECRET = process.env.JWT_SECRET ?? "replace-this-secret-in-production";
-const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL ?? "http://localhost:3000";
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:3000";
-
-const IS_DEV = process.env.NODE_ENV !== "production";
-
-function logDev(...args: unknown[]) {
-  if (IS_DEV) {
-    console.log("[Socket.IO Dev]", ...args);
-  }
-}
+// Memory cache for DB activity throttling to prevent DB write lock contention
+const activityThrottleMap = new Map<string, number>();
 
 function getAllowedOrigins(): string[] {
   const defaultOrigins = IS_DEV ? ["http://localhost:3000", "http://127.0.0.1:3000"] : [];
   const envOrigins: string[] = [];
 
-  if (process.env.FRONTEND_ORIGIN) {
-    process.env.FRONTEND_ORIGIN.split(",").forEach((origin) => {
-      const trimmed = origin.trim();
+  if (env.FRONTEND_ORIGIN) {
+    env.FRONTEND_ORIGIN.split(",").forEach((origin) => {
+      const trimmed = origin.trim().replace(/\/$/, "");
       if (trimmed && trimmed !== "*") {
         envOrigins.push(trimmed);
       }
@@ -54,7 +102,7 @@ function getAllowedOrigins(): string[] {
 
   Object.keys(process.env).forEach((key) => {
     if (key.startsWith("FRONTEND_ORIGIN_")) {
-      const val = process.env[key]?.trim();
+      const val = process.env[key]?.trim().replace(/\/$/, "");
       if (val && val !== "*") {
         envOrigins.push(val);
       }
@@ -69,14 +117,15 @@ function checkCorsOrigin(origin: string | undefined, callback: (err: Error | nul
     return callback(null, true);
   }
 
+  const normalizedOrigin = origin.replace(/\/$/, "");
   const allowed = getAllowedOrigins();
-  if (allowed.includes(origin)) {
+  if (allowed.includes(normalizedOrigin)) {
     return callback(null, true);
   }
 
   if (IS_DEV) {
     try {
-      const url = new URL(origin);
+      const url = new URL(normalizedOrigin);
       const hostname = url.hostname;
       if (
         hostname === "localhost" ||
@@ -88,7 +137,7 @@ function checkCorsOrigin(origin: string | undefined, callback: (err: Error | nul
         return callback(null, true);
       }
     } catch {
-      // Invalid URL string
+      // Invalid URL format
     }
   }
 
@@ -113,14 +162,48 @@ const io = new Server(server, {
 });
 
 app.set("trust proxy", 1);
-app.use(express.json({ limit: "32kb" }));
-app.use(morgan("combined"));
+
+// 17. Request ID Tracing Middleware
+app.use((req, res, next) => {
+  const reqId = (req.headers["x-request-id"] as string) || crypto.randomUUID();
+  res.setHeader("X-Request-ID", reqId);
+  (req as express.Request & { requestId: string }).requestId = reqId;
+  next();
+});
+
+// 6. Request Timeout Middleware (15s timeout for REST endpoints)
+app.use((req, res, next) => {
+  req.setTimeout(15000, () => {
+    if (!res.headersSent) {
+      res.status(408).json({ error: "Request timeout." });
+    }
+  });
+  next();
+});
+
+// 2. HTTP Compression Middleware
+app.use(compression());
+
+// 1. & 11. Helmet Security Headers Setup
 app.use(
   helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+    hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+    noSniff: true,
+    xssFilter: true,
   }),
 );
+
+app.use(express.json({ limit: "32kb" }));
+
+if (IS_DEV) {
+  app.use(morgan("dev"));
+} else {
+  app.use(morgan("combined"));
+}
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -129,32 +212,58 @@ app.use(
     credentials: true,
   }),
 );
-app.use(
-  rateLimit({
-    windowMs: 60_000,
-    limit: 120,
-    standardHeaders: "draft-8",
-    legacyHeaders: false,
-  }),
-);
 
+// 9. Rate Limiting Configurations
+const globalLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 120,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+});
+
+const sessionCreationLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "Session creation limit exceeded. Please wait a minute." },
+});
+
+const pairingLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "Pairing attempt limit exceeded. Please try again shortly." },
+});
+
+app.use(globalLimiter);
+
+// 5. Zod Request Validation Schemas
 const connectSchema = z.object({
   sessionId: z.string().regex(/^[A-Z0-9]{6}$/),
   deviceName: z.string().min(1).max(80),
   token: z.string().min(20),
 });
+
+const disconnectSchema = z.object({
+  sessionId: z.string().regex(/^[A-Z0-9]{6}$/),
+  token: z.string().min(20),
+});
+
 const signalSchema = z.object({ payload: z.record(z.string(), z.unknown()) });
 
 function getIceServers(): IceServer[] {
   const servers: IceServer[] = [
-    { urls: process.env.STUN_URL ?? "stun:stun.l.google.com:19302" },
+    { urls: env.STUN_URL },
   ];
 
-  if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+  if (env.TURN_URL && env.TURN_USERNAME && env.TURN_CREDENTIAL) {
     servers.push({
-      urls: process.env.TURN_URL,
-      username: process.env.TURN_USERNAME,
-      credential: process.env.TURN_CREDENTIAL,
+      urls: env.TURN_URL,
+      username: env.TURN_USERNAME,
+      credential: env.TURN_CREDENTIAL,
     });
   }
 
@@ -163,7 +272,7 @@ function getIceServers(): IceServer[] {
 
 function signToken(sessionId: string, role: Role, secret: string) {
   return jwt.sign({ sessionId, role, secret }, JWT_SECRET, {
-    expiresIn: Math.ceil(SESSION_TTL_MS / 1000),
+    expiresIn: env.SESSION_TTL_SECONDS,
     issuer: "mirrorconnect",
     audience: "mirrorconnect-signaling",
   });
@@ -215,42 +324,65 @@ async function createUniqueSessionId() {
   throw new Error("Could not allocate a unique session.");
 }
 
+// Optimized DB write throttling (max 1 update per 10s per session)
 async function markActivity(sessionId: string) {
-  await prisma.mirrorSession.updateMany({
-    where: { sessionId, status: { not: "expired" } },
-    data: { lastActivityAt: new Date() },
-  });
+  const now = Date.now();
+  const lastUpdated = activityThrottleMap.get(sessionId) ?? 0;
+  if (now - lastUpdated < 10_000) {
+    return;
+  }
+  activityThrottleMap.set(sessionId, now);
+
+  try {
+    await prisma.mirrorSession.updateMany({
+      where: { sessionId, status: { not: "expired" } },
+      data: { lastActivityAt: new Date() },
+    });
+  } catch (err) {
+    logger.warn("Failed to update activity timestamp", { sessionId, error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 async function expireSession(sessionId: string, reason: string) {
-  const updated = await prisma.mirrorSession.updateMany({
-    where: { sessionId, status: { not: "expired" } },
-    data: { status: "expired", viewerSocketId: null, deviceSocketId: null },
-  });
+  try {
+    const updated = await prisma.mirrorSession.updateMany({
+      where: { sessionId, status: { not: "expired" } },
+      data: { status: "expired", viewerSocketId: null, deviceSocketId: null },
+    });
 
-  if (updated.count) {
-    io.to(sessionId).emit("expired", { reason });
-    io.in(sessionId).disconnectSockets(true);
+    activityThrottleMap.delete(sessionId);
+
+    if (updated.count) {
+      io.to(sessionId).emit("expired", { reason });
+      io.in(sessionId).disconnectSockets(true);
+    }
+  } catch (err) {
+    logger.error("Error expiring session", { sessionId, error: err instanceof Error ? err.message : String(err) });
   }
 }
 
 async function setStatus(sessionId: string, status: SessionStatus, detail?: Prisma.InputJsonValue) {
-  await prisma.mirrorSession.update({
-    where: { sessionId },
-    data: {
-      status,
-      lastActivityAt: new Date(),
-      events: {
-        create: {
-          type: status,
-          detail,
+  try {
+    await prisma.mirrorSession.update({
+      where: { sessionId },
+      data: {
+        status,
+        lastActivityAt: new Date(),
+        events: {
+          create: {
+            type: status,
+            detail,
+          },
         },
       },
-    },
-  });
-  io.to(sessionId).emit("status", { status, detail });
+    });
+    io.to(sessionId).emit("status", { status, detail });
+  } catch (err) {
+    logger.error("Error setting session status", { sessionId, status, error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
+// 15. Health & Diagnostic Endpoints with Database Connectivity Check
 app.get("/health", async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -268,6 +400,7 @@ app.get("/health", async (_req, res) => {
       },
     });
   } catch (error) {
+    logger.error("Health check database failure", { error: error instanceof Error ? error.message : String(error) });
     res.status(503).json({
       status: "error",
       service: "mirrorconnect-backend",
@@ -290,12 +423,12 @@ app.get("/version", (_req, res) => {
   res.json({
     name: "@mirrorconnect/backend",
     version: "1.0.0",
-    nodeEnv: process.env.NODE_ENV ?? "development",
+    nodeEnv: env.NODE_ENV,
     nodeVersion: process.version,
   });
 });
 
-app.post("/api/session", async (_req, res, next) => {
+app.post("/api/session", sessionCreationLimiter, async (_req, res, next) => {
   try {
     const sessionId = await createUniqueSessionId();
     const secret = crypto.randomBytes(32).toString("hex");
@@ -318,7 +451,8 @@ app.post("/api/session", async (_req, res, next) => {
       },
     });
 
-    res.status(201).json({ sessionId, token, connectUrl, qrDataUrl, expiresAt, iceServers: getIceServers() });
+    logger.info("Session created", { sessionId, expiresAt: expiresAt.toISOString() });
+    res.status(201).json({ sessionId, token, connectUrl, qrDataUrl, expiresAt: expiresAt.toISOString(), iceServers: getIceServers() });
   } catch (error) {
     next(error);
   }
@@ -353,7 +487,7 @@ app.get("/api/session/:id", async (req, res, next) => {
   }
 });
 
-app.post("/api/connect", async (req, res, next) => {
+app.post("/api/connect", pairingLimiter, async (req, res, next) => {
   try {
     const body = connectSchema.parse(req.body);
     const deviceName = sanitizeDeviceName(body.deviceName);
@@ -376,6 +510,7 @@ app.post("/api/connect", async (req, res, next) => {
     });
     io.to(body.sessionId).emit("device-authorized", { deviceName });
 
+    logger.info("Device paired with session", { sessionId: body.sessionId, deviceName });
     res.json({ token: deviceToken, sessionId: body.sessionId, deviceName, iceServers: getIceServers() });
   } catch (error) {
     next(error);
@@ -384,44 +519,31 @@ app.post("/api/connect", async (req, res, next) => {
 
 app.post("/api/disconnect", async (req, res, next) => {
   try {
-    const sessionId = String(req.body?.sessionId ?? "").toUpperCase();
-    const token = String(req.body?.token ?? "");
-    if (!isSessionId(sessionId) || !token) {
-      res.status(400).json({ error: "Invalid disconnect request." });
-      return;
-    }
-
-    await verifySessionToken(sessionId, token);
-    await setStatus(sessionId, "disconnected", { reason: "Manual disconnect" });
-    io.to(sessionId).emit("disconnect-session", { reason: "Manual disconnect" });
+    const body = disconnectSchema.parse(req.body);
+    await verifySessionToken(body.sessionId, body.token);
+    await setStatus(body.sessionId, "disconnected", { reason: "Manual disconnect" });
+    io.to(body.sessionId).emit("disconnect-session", { reason: "Manual disconnect" });
+    logger.info("Session disconnected manually", { sessionId: body.sessionId });
     res.json({ ok: true });
   } catch (error) {
     next(error);
   }
 });
 
+// Socket.IO Signaling Authentication
 io.use(async (socket, next) => {
   try {
     const auth = socket.handshake.auth as SocketAuth;
-    logDev(`Auth attempt from ${socket.id} (IP: ${socket.handshake.address}, transport: ${socket.conn.transport.name})`, {
-      sessionId: auth?.sessionId,
-      role: auth?.role,
-      tokenProvided: Boolean(auth?.token),
-    });
-
     if (!auth || !isSessionId(auth.sessionId) || !auth.token || !["viewer", "device"].includes(auth.role)) {
-      logDev(`Auth failed for ${socket.id}: Invalid auth payload`);
       throw new Error("Invalid socket authentication.");
     }
 
     await verifySessionToken(auth.sessionId, auth.token, auth.role);
     socket.data.sessionId = auth.sessionId;
     socket.data.role = auth.role;
-    logDev(`Auth success for ${socket.id}: role=${auth.role}, sessionId=${auth.sessionId}`);
     next();
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unauthorized.";
-    logDev(`Auth rejected for ${socket.id}: ${message}`);
     next(error instanceof Error ? error : new Error("Unauthorized."));
   }
 });
@@ -431,13 +553,11 @@ function forwardSignal(socket: Socket, event: "offer" | "answer" | "ice-candidat
     void (async () => {
       const parsed = signalSchema.safeParse(message);
       if (!parsed.success) {
-        logDev(`Signal error [${event}] from ${socket.id}: Invalid payload`);
         socket.emit("signal-error", { event, error: "Invalid signaling payload." });
         return;
       }
       const sessionId = socket.data.sessionId as string;
       const role = socket.data.role as Role;
-      logDev(`Signal forwarded [${event}] from ${role} (${socket.id}) in session ${sessionId}`);
       await markActivity(sessionId);
 
       const type = event === "ice-candidate" ? `${event}-${role}` : event;
@@ -452,25 +572,24 @@ function forwardSignal(socket: Socket, event: "offer" | "answer" | "ice-candidat
 io.on("connection", async (socket) => {
   const sessionId = socket.data.sessionId as string;
   const role = socket.data.role as Role;
-  logDev(`Client connected: ${socket.id} (role: ${role}, session: ${sessionId}, transport: ${socket.conn.transport.name})`);
   socket.join(sessionId);
 
-  socket.conn.on("upgrade", (transport) => {
-    logDev(`Transport upgraded for ${socket.id}: ${transport.name}`);
-  });
+  try {
+    const session = await prisma.mirrorSession.update({
+      where: { sessionId },
+      data: role === "viewer" ? { viewerSocketId: socket.id } : { deviceSocketId: socket.id },
+    });
+    socket.emit("status", { status: session.status });
 
-  const session = await prisma.mirrorSession.update({
-    where: { sessionId },
-    data: role === "viewer" ? { viewerSocketId: socket.id } : { deviceSocketId: socket.id },
-  });
-  socket.emit("status", { status: session.status });
-
-  if (role === "viewer") {
-    socket.emit("create-session", { sessionId });
-    socket.to(sessionId).emit("viewer-available");
-  } else {
-    await setStatus(sessionId, "connecting", { role });
-    socket.to(sessionId).emit("join-session", { role });
+    if (role === "viewer") {
+      socket.emit("create-session", { sessionId });
+      socket.to(sessionId).emit("viewer-available");
+    } else {
+      await setStatus(sessionId, "connecting", { role });
+      socket.to(sessionId).emit("join-session", { role });
+    }
+  } catch (err) {
+    logger.error("Error setting socket connection ID", { sessionId, role, error: err instanceof Error ? err.message : String(err) });
   }
 
   socket.on("share-started", async (detail: { deviceName?: string }) => {
@@ -478,11 +597,15 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("connected", async () => {
-    await prisma.mirrorSession.update({
-      where: { sessionId },
-      data: { status: "connected", connectedAt: new Date(), lastActivityAt: new Date() },
-    });
-    io.to(sessionId).emit("status", { status: "connected" });
+    try {
+      await prisma.mirrorSession.update({
+        where: { sessionId },
+        data: { status: "connected", connectedAt: new Date(), lastActivityAt: new Date() },
+      });
+      io.to(sessionId).emit("status", { status: "connected" });
+    } catch (err) {
+      logger.error("Error updating connected status", { sessionId, error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   forwardSignal(socket, "offer");
@@ -499,51 +622,129 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("disconnect", async () => {
-    const session = await prisma.mirrorSession.findUnique({ where: { sessionId } });
-    if (!session || session.status === "expired") {
-      return;
-    }
+    try {
+      const session = await prisma.mirrorSession.findUnique({ where: { sessionId } });
+      if (!session || session.status === "expired") {
+        return;
+      }
 
-    await prisma.mirrorSession.update({
-      where: { sessionId },
-      data: role === "viewer" ? { viewerSocketId: null } : { deviceSocketId: null },
-    });
-    socket.to(sessionId).emit("peer-disconnected", { role });
+      await prisma.mirrorSession.update({
+        where: { sessionId },
+        data: role === "viewer" ? { viewerSocketId: null } : { deviceSocketId: null },
+      });
+      socket.to(sessionId).emit("peer-disconnected", { role });
+    } catch (err) {
+      logger.error("Error updating disconnect state", { sessionId, role, error: err instanceof Error ? err.message : String(err) });
+    }
   });
 });
 
-setInterval(async () => {
-  const now = new Date();
-  const inactiveBefore = new Date(Date.now() - INACTIVITY_MS);
-  const sessions = await prisma.mirrorSession.findMany({
-    where: {
-      status: { not: "expired" },
-      OR: [{ expiresAt: { lte: now } }, { lastActivityAt: { lte: inactiveBefore } }],
-    },
-    select: { sessionId: true, expiresAt: true, lastActivityAt: true },
-    take: 100,
-  });
+// Resilient background interval tick (wrapped in try/catch error boundary)
+const cleanupInterval = setInterval(async () => {
+  try {
+    const now = new Date();
+    const inactiveBefore = new Date(Date.now() - INACTIVITY_MS);
+    const sessions = await prisma.mirrorSession.findMany({
+      where: {
+        status: { not: "expired" },
+        OR: [{ expiresAt: { lte: now } }, { lastActivityAt: { lte: inactiveBefore } }],
+      },
+      select: { sessionId: true, expiresAt: true, lastActivityAt: true },
+      take: 100,
+    });
 
-  await Promise.all(
-    sessions.map((session) =>
-      expireSession(
-        session.sessionId,
-        session.expiresAt <= now ? "QR session expired." : "Disconnected after inactivity.",
+    await Promise.all(
+      sessions.map((session) =>
+        expireSession(
+          session.sessionId,
+          session.expiresAt <= now ? "QR session expired." : "Disconnected after inactivity.",
+        ),
       ),
-    ),
-  );
+    );
+  } catch (err) {
+    logger.error("Background session cleanup error", { error: err instanceof Error ? err.message : String(err) });
+  }
 }, 15_000);
 
-app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  const message = error instanceof z.ZodError
+// 4. Global Express Error Handling Middleware
+app.use((error: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const reqId = (req as express.Request & { requestId?: string }).requestId;
+  const isZod = error instanceof z.ZodError;
+  const message = isZod
     ? "Input validation failed."
     : error instanceof Error
       ? error.message
       : "Unexpected server error.";
-  const status = error instanceof z.ZodError ? 400 : message.includes("token") || message.includes("Unauthorized") ? 401 : 500;
-  res.status(status).json({ error: message });
+  const status = isZod ? 400 : message.includes("token") || message.includes("Unauthorized") ? 401 : 500;
+
+  logger.error("Express request error", {
+    requestId: reqId,
+    path: req.path,
+    method: req.method,
+    status,
+    error: message,
+    zodDetails: isZod ? (error as z.ZodError).format() : undefined,
+  });
+
+  res.status(status).json({
+    error: message,
+    requestId: reqId,
+    ...(isZod ? { details: (error as z.ZodError).format() } : {}),
+  });
 });
 
-server.listen(PORT, () => {
-  console.log(`MirrorConnect signaling server listening on ${PORT}`);
-});
+// 7. Database Connection Retry Logic on Startup
+async function startServerWithRetry(maxRetries = 5, delayMs = 2000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      await prisma.$connect();
+      await prisma.$queryRaw`SELECT 1`;
+      logger.info("Database connection established successfully.");
+      break;
+    } catch (err) {
+      logger.error(`Database connection attempt ${attempt}/${maxRetries} failed:`, { error: err instanceof Error ? err.message : String(err) });
+      if (attempt === maxRetries) {
+        logger.error("Failed to connect to database after max retries. Exiting.");
+        process.exit(1);
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  server.listen(PORT, () => {
+    logger.info(`MirrorConnect production signaling server listening on port ${PORT}`, { port: PORT, env: env.NODE_ENV });
+  });
+}
+
+// 3. Graceful Shutdown Handlers (SIGTERM / SIGINT)
+async function shutdown(signal: string) {
+  logger.info(`Received ${signal}. Initiating graceful shutdown...`);
+  clearInterval(cleanupInterval);
+
+  io.close(() => {
+    logger.info("Socket.IO server closed.");
+  });
+
+  server.close(async () => {
+    logger.info("HTTP server closed.");
+    try {
+      await prisma.$disconnect();
+      logger.info("Prisma database connection closed cleanly.");
+      process.exit(0);
+    } catch (err) {
+      logger.error("Error disconnecting Prisma during shutdown:", { error: err instanceof Error ? err.message : String(err) });
+      process.exit(1);
+    }
+  });
+
+  setTimeout(() => {
+    logger.error("Shutdown timed out. Forcing process exit.");
+    process.exit(1);
+  }, 10_000);
+}
+
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
+
+// Start server
+void startServerWithRetry();
