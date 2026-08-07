@@ -38,6 +38,7 @@
 - `DEPLOY_FREE.md` (Free cloud deployment architecture manual)
 - `FREE_DEPLOYMENT_GUIDE.md` (Step-by-step free tier deployment guide)
 - `FINAL_VERIFIED_DEPLOYMENT_REPORT.md` (Final verified deployment report)
+- Render Prisma Version Pinning (Pinned exact `6.19.3` in `backend/package.json` to prevent Prisma 7 breaking upgrade on Render).
 - Render Linux Binary Optimization (Pushed `debian-openssl-3.0.x` binaryTargets to `backend/prisma/schema.prisma`).
 - Render Backend Build Fix (Pushed `npx prisma` fix to GitHub repo; Render auto-deploy triggered).
 - Vercel Frontend Live (`https://mirrorconnect-khaki.vercel.app` - 100% Deployed & Active).
