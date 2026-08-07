@@ -38,6 +38,7 @@
 - `DEPLOY_FREE.md` (Free cloud deployment architecture manual)
 - `FREE_DEPLOYMENT_GUIDE.md` (Step-by-step free tier deployment guide)
 - `FINAL_VERIFIED_DEPLOYMENT_REPORT.md` (Final verified deployment report)
+- Workspace cleanup (Removed unrelated SongShift files, empty `CLAUDE.md`, and legacy VPS/Docker configuration files).
 
 ## Runtime Bugs Fixed
 - Resolved missing `connect_error` diagnostic detail for Socket.IO connection attempts.
