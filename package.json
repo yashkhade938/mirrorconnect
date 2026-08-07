@@ -15,6 +15,10 @@
     "lint": "npm run lint --workspace @mirrorconnect/frontend",
     "migrate:deploy": "npm run migrate:deploy --workspace @mirrorconnect/backend"
   },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "prisma": "6.19.3"
+  },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.17",
     "tailwindcss": "4.1.17"
